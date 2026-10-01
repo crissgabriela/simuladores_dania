@@ -1,85 +1,143 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { BeamParameters, ExcitationParameters, PhysicalDerivedValues, SimulationState } from '../types/physics';
 import { getBeamDeflectionAtHeight } from '../utils/physicsEngine';
-import { MoveHorizontal, ZoomIn, ZoomOut, RotateCcw, Hand } from 'lucide-react';
+import { ZoomIn, ZoomOut, RotateCcw, Hand, MoveHorizontal } from 'lucide-react';
 
 interface BeamCanvasProps {
   state: SimulationState;
   beamParams: BeamParameters;
   derived: PhysicalDerivedValues;
   excitation: ExcitationParameters;
-  onManualTipDisplace: (deltaU: number) => void;
+  onTipDragStart: () => void;
+  onTipDragMove: (targetU: number) => void;
+  onTipDragEnd: () => void;
   onReset: () => void;
+  isDraggingTip: boolean;
 }
 
 export const BeamCanvas: React.FC<BeamCanvasProps> = ({
   state,
   beamParams,
   derived,
-  onManualTipDisplace,
+  onTipDragStart,
+  onTipDragMove,
+  onTipDragEnd,
   onReset,
+  isDraggingTip,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [zoom, setZoom] = useState<number>(1.0);
-  const [isDragging, setIsDragging] = useState<boolean>(false);
-  const [dragStartX, setDragStartX] = useState<number>(0);
+  const [isHoveringTip, setIsHoveringTip] = useState<boolean>(false);
 
-  // Dimensiones lógicas del canvas
+  // Dimensiones lógicas internas del canvas
   const canvasWidth = 600;
   const canvasHeight = 520;
 
   // Escala de píxeles por metro
-  // Si la viga mide L metros, queremos que ocupe ~300px verticalmente
   const baseScaleY = 320 / Math.max(0.1, beamParams.length);
   // Escala horizontal para los desplazamientos (exagera visualmente para que sea intuitivo)
   const visualDisplacementScale = 4.0; // 4x para visualización clara de mm
 
-  const handleMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  // Convertir coordenadas del puntero de pantalla (MouseEvent / Touch) a coordenadas internas del canvas
+  const getCanvasCoords = useCallback((clientX: number, clientY: number): { x: number; y: number } => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const clickY = e.clientY - rect.top;
+    const scaleX = canvasWidth / rect.width;
+    const scaleY = canvasHeight / rect.height;
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY,
+    };
+  }, []);
 
-    // Verificar si el click está cerca del extremo superior (masa)
+  // Calcular la posición exacta del centro de la masa puntual en el canvas
+  const getTipCanvasCoords = useCallback(() => {
     const centerX = canvasWidth / 2;
-    const baseY = canvasHeight - 80;
-    const tipY = baseY - beamParams.length * baseScaleY * zoom;
-    const tipX = centerX + (state.xb + state.u * visualDisplacementScale) * baseScaleY * zoom;
+    const baseY = canvasHeight - 90;
+    const scale = baseScaleY * zoom;
+    const baseCanvasX = centerX + state.xb * scale * visualDisplacementScale;
+    const tipX = baseCanvasX + state.u * scale * visualDisplacementScale;
+    const tipY = baseY - 14 - beamParams.length * scale;
+    return { tipX, tipY, scale, centerX, baseY };
+  }, [state.xb, state.u, beamParams.length, baseScaleY, zoom, visualDisplacementScale]);
 
-    const dist = Math.hypot(clickX - tipX, clickY - tipY);
-    if (dist < 35) {
-      setIsDragging(true);
-      setDragStartX(clickX);
+  // Manejo de inicio de arrastre (MouseDown y TouchStart)
+  const handleStartDrag = (clientX: number, clientY: number) => {
+    const { x, y } = getCanvasCoords(clientX, clientY);
+    const { tipX, tipY } = getTipCanvasCoords();
+    const tipMassRadius = Math.max(14, Math.min(32, 14 + Math.cbrt(beamParams.tipMass) * 10));
+    const hitRadius = Math.max(45, tipMassRadius + 20); // Área de interacción amplia y cómoda
+
+    const dist = Math.hypot(x - tipX, y - tipY);
+    if (dist <= hitRadius) {
+      onTipDragStart();
     }
   };
 
-  const handleMouseMove = useCallback((e: MouseEvent) => {
-    if (!isDragging || !canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const currentX = e.clientX - rect.left;
-    const dxPx = currentX - dragStartX;
-    const dxMeters = dxPx / (baseScaleY * zoom * visualDisplacementScale);
-    onManualTipDisplace(dxMeters);
-    setDragStartX(currentX);
-  }, [isDragging, dragStartX, baseScaleY, zoom, visualDisplacementScale, onManualTipDisplace]);
+  // Manejo del movimiento del puntero
+  const handlePointerMove = useCallback(
+    (clientX: number, clientY: number) => {
+      const { x, y } = getCanvasCoords(clientX, clientY);
+      const { tipX, tipY, centerX, scale } = getTipCanvasCoords();
+      const tipMassRadius = Math.max(14, Math.min(32, 14 + Math.cbrt(beamParams.tipMass) * 10));
+      const hitRadius = Math.max(45, tipMassRadius + 20);
 
-  const handleMouseUp = useCallback(() => {
-    setIsDragging(false);
-  }, []);
+      // Comprobar si el cursor está sobre la masa para hover feedback
+      const dist = Math.hypot(x - tipX, y - tipY);
+      setIsHoveringTip(dist <= hitRadius);
 
+      if (isDraggingTip) {
+        // Calcular la deflexión relativa u objetivo:
+        // x = centerX + (xb + u) * scale * visualDisplacementScale
+        // => u = (x - centerX) / (scale * visualDisplacementScale) - xb
+        const totalDispMeters = (x - centerX) / (scale * visualDisplacementScale);
+        const targetU = totalDispMeters - state.xb;
+        onTipDragMove(targetU);
+      }
+    },
+    [getCanvasCoords, getTipCanvasCoords, beamParams.tipMass, isDraggingTip, state.xb, onTipDragMove]
+  );
+
+  // Escuchar eventos globales de arrastre en window para que no se pierda el foco
   useEffect(() => {
-    if (isDragging) {
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
-      return () => {
-        window.removeEventListener('mousemove', handleMouseMove);
-        window.removeEventListener('mouseup', handleMouseUp);
-      };
-    }
-  }, [isDragging, handleMouseMove, handleMouseUp]);
+    if (!isDraggingTip) return;
 
-  // Dibujo en el canvas
+    const onWindowMouseMove = (e: MouseEvent) => {
+      handlePointerMove(e.clientX, e.clientY);
+    };
+
+    const onWindowMouseUp = () => {
+      onTipDragEnd();
+    };
+
+    const onWindowTouchMove = (e: TouchEvent) => {
+      if (e.touches.length > 0) {
+        e.preventDefault();
+        handlePointerMove(e.touches[0].clientX, e.touches[0].clientY);
+      }
+    };
+
+    const onWindowTouchEnd = () => {
+      onTipDragEnd();
+    };
+
+    window.addEventListener('mousemove', onWindowMouseMove);
+    window.addEventListener('mouseup', onWindowMouseUp);
+    window.addEventListener('touchmove', onWindowTouchMove, { passive: false });
+    window.addEventListener('touchend', onWindowTouchEnd);
+    window.addEventListener('touchcancel', onWindowTouchEnd);
+
+    return () => {
+      window.removeEventListener('mousemove', onWindowMouseMove);
+      window.removeEventListener('mouseup', onWindowMouseUp);
+      window.removeEventListener('touchmove', onWindowTouchMove);
+      window.removeEventListener('touchend', onWindowTouchEnd);
+      window.removeEventListener('touchcancel', onWindowTouchEnd);
+    };
+  }, [isDraggingTip, handlePointerMove, onTipDragEnd]);
+
+  // Dibujo en el canvas a 60 FPS
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -89,10 +147,11 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
     // Limpiar canvas
     ctx.clearRect(0, 0, canvasWidth, canvasHeight);
 
-    // Fondo con cuadrícula técnica sutil
+    // Fondo técnico oscuro
     ctx.fillStyle = '#090d16';
     ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
+    // Cuadrícula de referencia
     ctx.strokeStyle = '#1e293b';
     ctx.lineWidth = 1;
     const gridStep = 40;
@@ -114,12 +173,11 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
     const scale = baseScaleY * zoom;
 
     // Coordenadas físicas convertidas a canvas
-    // La base se desplaza con xb
     const baseCanvasX = centerX + state.xb * scale * visualDisplacementScale;
     const baseWidth = 140;
     const baseHeight = 35;
 
-    // 1. Dibujar riel / guía horizontal de la base
+    // 1. Riel / guía horizontal de la base
     ctx.strokeStyle = '#334155';
     ctx.lineWidth = 4;
     ctx.beginPath();
@@ -145,7 +203,7 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
       }
     }
 
-    // Línea central de referencia (x = 0)
+    // Línea central de referencia neutra (x = 0)
     ctx.strokeStyle = 'rgba(56, 189, 248, 0.25)';
     ctx.setLineDash([4, 4]);
     ctx.lineWidth = 1.5;
@@ -155,8 +213,7 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
     ctx.stroke();
     ctx.setLineDash([]);
 
-    // 2. Dibujar plataforma móvil (base del carro)
-    // Carrito
+    // 2. Plataforma móvil (base del carro)
     ctx.save();
     ctx.translate(baseCanvasX, baseY);
 
@@ -195,25 +252,23 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
     ctx.fillRect(-22, -14, 44, 14);
     ctx.strokeRect(-22, -14, 44, 14);
 
-    // Tornillos de fijación del empotramiento
+    // Tornillos de fijación
     ctx.fillStyle = '#0ea5e9';
     ctx.beginPath();
     ctx.arc(-12, -7, 2.5, 0, Math.PI * 2);
     ctx.arc(12, -7, 2.5, 0, Math.PI * 2);
     ctx.fill();
 
-    // Texto en la base
+    // Texto descriptivo en la base
     ctx.fillStyle = '#93c5fd';
     ctx.font = '10px sans-serif';
     ctx.textAlign = 'center';
     ctx.fillText('BASE MÓVIL (xb)', 0, 16);
     ctx.fillStyle = '#38bdf8';
     ctx.fillText(`xb: ${(state.xb * 1000).toFixed(1)} mm`, 0, 28);
-
     ctx.restore();
 
-    // 3. Dibujar viga elástica flexionada
-    // Se muestrean 30 puntos a lo largo de la altura z de 0 a L
+    // 3. Viga elástica continua flexionada
     const numSegments = 32;
     const beamPoints: { x: number; y: number }[] = [];
     const L = beamParams.length;
@@ -226,14 +281,11 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
       beamPoints.push({ x: canvasX, y: canvasY });
     }
 
-    // Grosor visual de la viga en función de las dimensiones reales
     const beamThickness = Math.max(
       4,
       Math.min(14, (beamParams.crossSection === 'circular' ? beamParams.diameter || 0.01 : beamParams.height || 0.005) * 800)
     );
 
-    // Trazar línea de viga con degradado de esfuerzo
-    // Cuanto mayor sea la flexión, más brillante es la base (concentración de momentos)
     const absDeflection = Math.abs(state.u);
     const stressRatio = Math.min(1, absDeflection / 0.04);
     const beamColor = `hsl(${210 - stressRatio * 60}, ${80}%, ${65}%)`;
@@ -249,43 +301,51 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
     ctx.lineJoin = 'round';
     ctx.stroke();
 
-    // Glow effect en la viga
     ctx.strokeStyle = `rgba(56, 189, 248, ${0.15 + stressRatio * 0.3})`;
     ctx.lineWidth = beamThickness + 6;
     ctx.stroke();
 
-    // 4. Dibujar la Masa en el Extremo Superior
+    // 4. Masa Puntual en el Extremo Superior
     const tipPoint = beamPoints[beamPoints.length - 1];
     const tipMassRadius = Math.max(14, Math.min(32, 14 + Math.cbrt(beamParams.tipMass) * 10));
 
     ctx.save();
     ctx.translate(tipPoint.x, tipPoint.y);
 
-    // Halo interactivo si se está arrastrando o hover
-    if (isDragging) {
+    // Halo interactivo de arrastre o hover
+    if (isDraggingTip || isHoveringTip) {
       ctx.beginPath();
-      ctx.arc(0, 0, tipMassRadius + 8, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(245, 158, 11, 0.3)';
+      ctx.arc(0, 0, tipMassRadius + 12, 0, Math.PI * 2);
+      ctx.fillStyle = isDraggingTip ? 'rgba(245, 158, 11, 0.45)' : 'rgba(56, 189, 248, 0.35)';
       ctx.fill();
+
+      // Anillo exterior pulsante
+      ctx.beginPath();
+      ctx.arc(0, 0, tipMassRadius + 18, 0, Math.PI * 2);
+      ctx.strokeStyle = isDraggingTip ? '#f59e0b' : '#38bdf8';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
-    // Sombra de masa
-    const massGrad = ctx.createRadialGradient(-4, -4, 2, 0, 0, tipMassRadius);
-    massGrad.addColorStop(0, '#fde68a');
+    // Esfera / Cilindro de la masa
+    const massGrad = ctx.createRadialGradient(-5, -5, 2, 0, 0, tipMassRadius);
+    massGrad.addColorStop(0, '#fef08a');
     massGrad.addColorStop(0.4, '#f59e0b');
-    massGrad.addColorStop(1, '#b45309');
+    massGrad.addColorStop(1, '#92400e');
 
     ctx.beginPath();
     ctx.arc(0, 0, tipMassRadius, 0, Math.PI * 2);
     ctx.fillStyle = massGrad;
     ctx.fill();
-    ctx.strokeStyle = '#d97706';
-    ctx.lineWidth = 2.5;
+    ctx.strokeStyle = isDraggingTip ? '#ffffff' : '#d97706';
+    ctx.lineWidth = isDraggingTip ? 3 : 2;
     ctx.stroke();
 
-    // Anillo metálico de montaje
+    // Anillo central
     ctx.beginPath();
-    ctx.arc(0, 0, 4, 0, Math.PI * 2);
+    ctx.arc(0, 0, 4.5, 0, Math.PI * 2);
     ctx.fillStyle = '#0f172a';
     ctx.fill();
     ctx.strokeStyle = '#fef3c7';
@@ -297,59 +357,60 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
     ctx.font = 'bold 10px sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(`${beamParams.tipMass} kg`, 0, tipMassRadius + 14);
+    ctx.fillText(`${beamParams.tipMass} kg`, 0, tipMassRadius + 15);
 
     ctx.restore();
 
-    // 5. Vectores y Marcadores Informativos en Canvas
-    // Marcador de deflexión relativa u(t)
+    // 5. Cotas de deflexión relativa u(t) y posición absoluta xtip
     ctx.save();
     ctx.strokeStyle = '#f59e0b';
     ctx.lineWidth = 1.5;
     ctx.setLineDash([3, 3]);
-    // Línea vertical desde la posición recta proyectada de la base
+
     ctx.beginPath();
     ctx.moveTo(baseCanvasX, tipPoint.y - 10);
     ctx.lineTo(baseCanvasX, tipPoint.y + 10);
     ctx.stroke();
 
-    // Cota horizontal para u
     ctx.setLineDash([]);
     ctx.beginPath();
     ctx.moveTo(baseCanvasX, tipPoint.y);
     ctx.lineTo(tipPoint.x, tipPoint.y);
     ctx.stroke();
 
-    // Flechitas para u
     ctx.fillStyle = '#f59e0b';
-    ctx.font = '11px monospace';
+    ctx.font = 'bold 11px monospace';
     ctx.textAlign = tipPoint.x >= baseCanvasX ? 'left' : 'right';
-    const textOffset = tipPoint.x >= baseCanvasX ? 10 : -10;
-    ctx.fillText(`u: ${(state.u * 1000).toFixed(1)} mm`, tipPoint.x + textOffset, tipPoint.y - 5);
+    const textOffset = tipPoint.x >= baseCanvasX ? 12 : -12;
+    ctx.fillText(`u: ${(state.u * 1000).toFixed(1)} mm`, tipPoint.x + textOffset, tipPoint.y - 6);
     ctx.restore();
 
-    // Marcador de posición absoluta xtip
+    // Marcador de posición absoluta xtip en la parte superior
     ctx.save();
     ctx.fillStyle = '#10b981';
     ctx.font = '11px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(`xtip (abs): ${(state.x_tip * 1000).toFixed(1)} mm`, tipPoint.x, 35);
+    ctx.fillText(`xtip (abs): ${(state.x_tip * 1000).toFixed(1)} mm`, tipPoint.x, 32);
     ctx.restore();
 
-    // Cartel explicativo de interacción
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
-    ctx.font = '11px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText('💡 Arrastra la masa amarilla con el mouse para aplicar desplazamiento inicial', 14, canvasHeight - 15);
-  }, [state, beamParams, derived, zoom, baseScaleY, visualDisplacementScale, isDragging]);
+    // Mensaje de ayuda si está arrastrando
+    if (isDraggingTip) {
+      ctx.fillStyle = '#f59e0b';
+      ctx.font = 'bold 12px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('Soltando la masa iniciará la oscilación libre desde esta posición', canvasWidth / 2, 48);
+    }
+  }, [state, beamParams, derived, zoom, baseScaleY, visualDisplacementScale, isDraggingTip, isHoveringTip]);
 
   return (
     <div className="relative bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-2xl flex flex-col items-center">
       {/* Barra superior de herramientas del canvas */}
       <div className="w-full px-4 py-2.5 bg-slate-800/80 border-b border-slate-700/60 flex items-center justify-between text-xs text-slate-300">
         <div className="flex items-center space-x-2">
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
-          <span className="font-semibold text-slate-200">Simulación Mecánica en Tiempo Real</span>
+          <span className={`w-2.5 h-2.5 rounded-full ${isDraggingTip ? 'bg-amber-400 animate-ping' : 'bg-emerald-500 animate-pulse'}`}></span>
+          <span className="font-semibold text-slate-200">
+            {isDraggingTip ? 'Arrastre Manual Activo' : 'Simulación Mecánica en Tiempo Real'}
+          </span>
           <span className="text-slate-400">|</span>
           <span className="text-cyan-400 font-mono">f_n = {derived.naturalFreqHz.toFixed(2)} Hz</span>
           <span className="text-amber-400 font-mono">Q = {derived.qualityFactor.toFixed(1)}</span>
@@ -384,26 +445,36 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
         </div>
       </div>
 
-      {/* Contenedor del Canvas */}
-      <div className="relative cursor-grab active:cursor-grabbing w-full flex justify-center py-2">
+      {/* Contenedor del Canvas con eventos de Mouse y Touch */}
+      <div
+        className={`relative w-full flex justify-center py-2 select-none ${
+          isDraggingTip ? 'cursor-grabbing' : isHoveringTip ? 'cursor-grab' : 'cursor-default'
+        }`}
+      >
         <canvas
           ref={canvasRef}
           width={canvasWidth}
           height={canvasHeight}
-          onMouseDown={handleMouseDown}
-          className="rounded-lg shadow-inner max-w-full h-auto"
+          onMouseDown={e => handleStartDrag(e.clientX, e.clientY)}
+          onMouseMove={e => handlePointerMove(e.clientX, e.clientY)}
+          onTouchStart={e => {
+            if (e.touches.length > 0) {
+              handleStartDrag(e.touches[0].clientX, e.touches[0].clientY);
+            }
+          }}
+          className="rounded-lg shadow-inner max-w-full h-auto touch-none"
         />
 
-        {/* Guía flotante de arrastre si no se está moviendo */}
-        {Math.abs(state.u) < 0.001 && Math.abs(state.xb) < 0.001 && (
-          <div className="absolute top-16 pointer-events-none bg-slate-800/90 border border-slate-700 text-slate-200 px-3 py-1.5 rounded-full text-xs flex items-center space-x-2 shadow-lg animate-bounce">
-            <Hand size={14} className="text-amber-400" />
-            <span>Haz clic y estira la masa con el ratón</span>
+        {/* Guía interactiva flotante permanente para que el usuario sepa que puede arrastrar */}
+        {!isDraggingTip && (
+          <div className="absolute top-16 pointer-events-none bg-slate-900/90 border border-amber-500/40 text-amber-300 px-3.5 py-1.5 rounded-full text-xs flex items-center space-x-2 shadow-lg backdrop-blur-sm animate-pulse">
+            <Hand size={15} className="text-amber-400" />
+            <span>Haz clic o toca la masa amarilla para arrastrarla</span>
           </div>
         )}
       </div>
 
-      {/* Leyenda de canales en pie de canvas */}
+      {/* Leyenda en pie de canvas */}
       <div className="w-full px-4 py-2 bg-slate-950 border-t border-slate-800 flex flex-wrap items-center justify-around text-[11px] text-slate-400">
         <div className="flex items-center space-x-1.5">
           <span className="w-3 h-1.5 rounded bg-cyan-400"></span>
@@ -415,7 +486,7 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
         </div>
         <div className="flex items-center space-x-1.5">
           <span className="w-3 h-1.5 rounded bg-emerald-400"></span>
-          <span>Posición total del extremo <code className="text-emerald-300 font-mono">xtip = xb + u</code></span>
+          <span>Extremo absoluto <code className="text-emerald-300 font-mono">xtip = xb + u</code></span>
         </div>
       </div>
     </div>

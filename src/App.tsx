@@ -127,16 +127,44 @@ export const App: React.FC = () => {
     }));
   }, [derived.naturalFreqHz]);
 
-  // Manejo de arrastre manual de la masa con el ratón
-  const handleManualTipDisplace = useCallback((deltaU: number) => {
+  // Estado y referencia de arrastre manual de la masa con el ratón / touch
+  const isDraggingRef = useRef<boolean>(false);
+  const [isDraggingTip, setIsDraggingTip] = useState<boolean>(false);
+
+  // Iniciar arrastre manual
+  const handleTipDragStart = useCallback(() => {
+    isDraggingRef.current = true;
+    setIsDraggingTip(true);
+  }, []);
+
+  // Mover masa manualmente mientras se arrastra
+  const handleTipDragMove = useCallback((targetU: number) => {
+    // Limitar la deflexión a un rango físico seguro (+/- 120 mm)
+    const clampedU = Math.max(-0.12, Math.min(0.12, targetU));
     setSimState(prev => {
-      const nextU = Math.max(-0.15, Math.min(0.15, prev.u + deltaU));
-      return {
+      const updated: SimulationState = {
         ...prev,
-        u: nextU,
-        u_dot: 0, // se suelta desde reposo
-        x_tip: prev.xb + nextU,
+        u: clampedU,
+        u_dot: 0,
+        u_ddot: 0,
+        x_tip: prev.xb + clampedU,
       };
+      stateRef.current = updated;
+      return updated;
+    });
+  }, []);
+
+  // Soltar masa (inicia la oscilación libre desde la posición desplazada)
+  const handleTipDragEnd = useCallback(() => {
+    isDraggingRef.current = false;
+    setIsDraggingTip(false);
+    setSimState(prev => {
+      const updated: SimulationState = {
+        ...prev,
+        u_dot: 0, // velocidad inicial cero al soltar
+      };
+      stateRef.current = updated;
+      return updated;
     });
   }, []);
 
@@ -162,18 +190,39 @@ export const App: React.FC = () => {
         const timeScale = stateRef.current.timeScale;
         const simDtTotal = dtReal * timeScale;
 
-        // Sub-stepping numérico (pasos fijos de 2 ms para estabilidad RK4 absoluta)
-        const subStep = 0.002;
-        let elapsed = 0;
         let currentState = stateRef.current;
 
-        while (elapsed < simDtTotal) {
-          const stepSize = Math.min(subStep, simDtTotal - elapsed);
-          currentState = rk4Step(currentState, derivedRef.current, excitationRef.current, stepSize);
-          elapsed += stepSize;
-        }
+        if (isDraggingRef.current) {
+          // El usuario está sosteniendo la masa: la cinemática de la base continúa
+          // pero la deflexión relativa u se mantiene fija por la mano del usuario
+          const nextT = currentState.t + simDtTotal;
+          const baseKin = getBaseKinematics(nextT, excitationRef.current);
+          currentState = {
+            ...currentState,
+            t: nextT,
+            xb: baseKin.xb,
+            xb_dot: baseKin.xb_dot,
+            xb_ddot: baseKin.xb_ddot,
+            u_dot: 0,
+            u_ddot: 0,
+            x_tip: baseKin.xb + currentState.u,
+          };
+          setSimState(currentState);
+          stateRef.current = currentState;
+        } else {
+          // Integración numérica ordinaria con Runge-Kutta de 4to Orden (RK4)
+          const subStep = 0.002;
+          let elapsed = 0;
 
-        setSimState(currentState);
+          while (elapsed < simDtTotal) {
+            const stepSize = Math.min(subStep, simDtTotal - elapsed);
+            currentState = rk4Step(currentState, derivedRef.current, excitationRef.current, stepSize);
+            elapsed += stepSize;
+          }
+
+          setSimState(currentState);
+          stateRef.current = currentState;
+        }
 
         // Muestrear en el buffer a 100 Hz (cada 10 ms simulados)
         if (currentState.t - lastSampleTimeRef.current >= 0.01) {
@@ -282,8 +331,11 @@ export const App: React.FC = () => {
               beamParams={beamParams}
               derived={derived}
               excitation={excitation}
-              onManualTipDisplace={handleManualTipDisplace}
+              onTipDragStart={handleTipDragStart}
+              onTipDragMove={handleTipDragMove}
+              onTipDragEnd={handleTipDragEnd}
               onReset={handleReset}
+              isDraggingTip={isDraggingTip}
             />
           </div>
 
