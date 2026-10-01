@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { BeamParameters, ExcitationParameters, PhysicalDerivedValues, SimulationState } from '../types/physics';
 import { getBeamDeflectionAtHeight } from '../utils/physicsEngine';
-import { ZoomIn, ZoomOut, RotateCcw, Hand, MoveHorizontal } from 'lucide-react';
+import { ZoomIn, ZoomOut, RotateCcw, Hand } from 'lucide-react';
 
 interface BeamCanvasProps {
   state: SimulationState;
@@ -28,6 +28,7 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [zoom, setZoom] = useState<number>(1.0);
   const [isHoveringTip, setIsHoveringTip] = useState<boolean>(false);
+  const isDraggingRef = useRef<boolean>(false);
 
   // Dimensiones lógicas internas del canvas
   const canvasWidth = 600;
@@ -35,16 +36,16 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
 
   // Escala de píxeles por metro
   const baseScaleY = 320 / Math.max(0.1, beamParams.length);
-  // Escala horizontal para los desplazamientos (exagera visualmente para que sea intuitivo)
-  const visualDisplacementScale = 4.0; // 4x para visualización clara de mm
+  // Escala horizontal para los desplazamientos (4x para que la deflexión en mm sea bien visible)
+  const visualDisplacementScale = 4.0;
 
-  // Convertir coordenadas del puntero de pantalla (MouseEvent / Touch) a coordenadas internas del canvas
+  // Convertir coordenadas del puntero de pantalla (MouseEvent / Touch / Pointer) a coordenadas internas del canvas
   const getCanvasCoords = useCallback((clientX: number, clientY: number): { x: number; y: number } => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
-    const scaleX = canvasWidth / rect.width;
-    const scaleY = canvasHeight / rect.height;
+    const scaleX = canvasWidth / Math.max(1, rect.width);
+    const scaleY = canvasHeight / Math.max(1, rect.height);
     return {
       x: (clientX - rect.left) * scaleX,
       y: (clientY - rect.top) * scaleY,
@@ -62,80 +63,67 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
     return { tipX, tipY, scale, centerX, baseY };
   }, [state.xb, state.u, beamParams.length, baseScaleY, zoom, visualDisplacementScale]);
 
-  // Manejo de inicio de arrastre (MouseDown y TouchStart)
-  const handleStartDrag = (clientX: number, clientY: number) => {
-    const { x, y } = getCanvasCoords(clientX, clientY);
-    const { tipX, tipY } = getTipCanvasCoords();
+  // Manejo PointerDown (ratón, táctil, lápiz)
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    // Aceptar solo botón izquierdo si es mouse
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+
+    const { x, y } = getCanvasCoords(e.clientX, e.clientY);
+    const { tipX, tipY, centerX, scale } = getTipCanvasCoords();
     const tipMassRadius = Math.max(14, Math.min(32, 14 + Math.cbrt(beamParams.tipMass) * 10));
-    const hitRadius = Math.max(45, tipMassRadius + 20); // Área de interacción amplia y cómoda
+    const hitRadius = Math.max(50, tipMassRadius + 25); // Área de agarre generosa
 
     const dist = Math.hypot(x - tipX, y - tipY);
     if (dist <= hitRadius) {
+      e.preventDefault();
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch (_) {}
+
+      isDraggingRef.current = true;
       onTipDragStart();
+
+      // Ajustar posición inmediatamente al punto donde se hizo clic
+      const totalDispMeters = (x - centerX) / (scale * visualDisplacementScale);
+      const targetU = totalDispMeters - state.xb;
+      onTipDragMove(targetU);
     }
   };
 
-  // Manejo del movimiento del puntero
-  const handlePointerMove = useCallback(
-    (clientX: number, clientY: number) => {
-      const { x, y } = getCanvasCoords(clientX, clientY);
-      const { tipX, tipY, centerX, scale } = getTipCanvasCoords();
-      const tipMassRadius = Math.max(14, Math.min(32, 14 + Math.cbrt(beamParams.tipMass) * 10));
-      const hitRadius = Math.max(45, tipMassRadius + 20);
+  // Manejo PointerMove
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const { x, y } = getCanvasCoords(e.clientX, e.clientY);
+    const { tipX, tipY, centerX, scale } = getTipCanvasCoords();
+    const tipMassRadius = Math.max(14, Math.min(32, 14 + Math.cbrt(beamParams.tipMass) * 10));
+    const hitRadius = Math.max(50, tipMassRadius + 25);
 
-      // Comprobar si el cursor está sobre la masa para hover feedback
-      const dist = Math.hypot(x - tipX, y - tipY);
-      setIsHoveringTip(dist <= hitRadius);
+    const dist = Math.hypot(x - tipX, y - tipY);
+    setIsHoveringTip(dist <= hitRadius);
 
-      if (isDraggingTip) {
-        // Calcular la deflexión relativa u objetivo:
-        // x = centerX + (xb + u) * scale * visualDisplacementScale
-        // => u = (x - centerX) / (scale * visualDisplacementScale) - xb
-        const totalDispMeters = (x - centerX) / (scale * visualDisplacementScale);
-        const targetU = totalDispMeters - state.xb;
-        onTipDragMove(targetU);
-      }
-    },
-    [getCanvasCoords, getTipCanvasCoords, beamParams.tipMass, isDraggingTip, state.xb, onTipDragMove]
-  );
+    if (isDraggingRef.current || isDraggingTip) {
+      e.preventDefault();
+      const totalDispMeters = (x - centerX) / (scale * visualDisplacementScale);
+      const targetU = totalDispMeters - state.xb;
+      onTipDragMove(targetU);
+    }
+  };
 
-  // Escuchar eventos globales de arrastre en window para que no se pierda el foco
+  // Manejo PointerUp y Cancel
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (isDraggingRef.current || isDraggingTip) {
+      e.preventDefault();
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch (_) {}
+      isDraggingRef.current = false;
+      onTipDragEnd();
+    }
+  };
+
+  // Sincronizar referencia de arrastre con prop externa
   useEffect(() => {
-    if (!isDraggingTip) return;
-
-    const onWindowMouseMove = (e: MouseEvent) => {
-      handlePointerMove(e.clientX, e.clientY);
-    };
-
-    const onWindowMouseUp = () => {
-      onTipDragEnd();
-    };
-
-    const onWindowTouchMove = (e: TouchEvent) => {
-      if (e.touches.length > 0) {
-        e.preventDefault();
-        handlePointerMove(e.touches[0].clientX, e.touches[0].clientY);
-      }
-    };
-
-    const onWindowTouchEnd = () => {
-      onTipDragEnd();
-    };
-
-    window.addEventListener('mousemove', onWindowMouseMove);
-    window.addEventListener('mouseup', onWindowMouseUp);
-    window.addEventListener('touchmove', onWindowTouchMove, { passive: false });
-    window.addEventListener('touchend', onWindowTouchEnd);
-    window.addEventListener('touchcancel', onWindowTouchEnd);
-
-    return () => {
-      window.removeEventListener('mousemove', onWindowMouseMove);
-      window.removeEventListener('mouseup', onWindowMouseUp);
-      window.removeEventListener('touchmove', onWindowTouchMove);
-      window.removeEventListener('touchend', onWindowTouchEnd);
-      window.removeEventListener('touchcancel', onWindowTouchEnd);
-    };
-  }, [isDraggingTip, handlePointerMove, onTipDragEnd]);
+    isDraggingRef.current = isDraggingTip;
+  }, [isDraggingTip]);
 
   // Dibujo en el canvas a 60 FPS
   useEffect(() => {
@@ -315,15 +303,15 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
     // Halo interactivo de arrastre o hover
     if (isDraggingTip || isHoveringTip) {
       ctx.beginPath();
-      ctx.arc(0, 0, tipMassRadius + 12, 0, Math.PI * 2);
+      ctx.arc(0, 0, tipMassRadius + 14, 0, Math.PI * 2);
       ctx.fillStyle = isDraggingTip ? 'rgba(245, 158, 11, 0.45)' : 'rgba(56, 189, 248, 0.35)';
       ctx.fill();
 
       // Anillo exterior pulsante
       ctx.beginPath();
-      ctx.arc(0, 0, tipMassRadius + 18, 0, Math.PI * 2);
+      ctx.arc(0, 0, tipMassRadius + 20, 0, Math.PI * 2);
       ctx.strokeStyle = isDraggingTip ? '#f59e0b' : '#38bdf8';
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 2.5;
       ctx.setLineDash([4, 4]);
       ctx.stroke();
       ctx.setLineDash([]);
@@ -393,12 +381,12 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
     ctx.fillText(`xtip (abs): ${(state.x_tip * 1000).toFixed(1)} mm`, tipPoint.x, 32);
     ctx.restore();
 
-    // Mensaje de ayuda si está arrastrando
+    // Mensaje de estado mientras se arrastra
     if (isDraggingTip) {
       ctx.fillStyle = '#f59e0b';
       ctx.font = 'bold 12px sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('Soltando la masa iniciará la oscilación libre desde esta posición', canvasWidth / 2, 48);
+      ctx.fillText(`Soltando la masa iniciará la oscilación libre (u = ${(state.u * 1000).toFixed(1)} mm)`, canvasWidth / 2, 48);
     }
   }, [state, beamParams, derived, zoom, baseScaleY, visualDisplacementScale, isDraggingTip, isHoveringTip]);
 
@@ -445,9 +433,9 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
         </div>
       </div>
 
-      {/* Contenedor del Canvas con eventos de Mouse y Touch */}
+      {/* Contenedor del Canvas con PointerEvents nativos y captura */}
       <div
-        className={`relative w-full flex justify-center py-2 select-none ${
+        className={`relative w-full flex justify-center py-2 select-none touch-none ${
           isDraggingTip ? 'cursor-grabbing' : isHoveringTip ? 'cursor-grab' : 'cursor-default'
         }`}
       >
@@ -455,21 +443,18 @@ export const BeamCanvas: React.FC<BeamCanvasProps> = ({
           ref={canvasRef}
           width={canvasWidth}
           height={canvasHeight}
-          onMouseDown={e => handleStartDrag(e.clientX, e.clientY)}
-          onMouseMove={e => handlePointerMove(e.clientX, e.clientY)}
-          onTouchStart={e => {
-            if (e.touches.length > 0) {
-              handleStartDrag(e.touches[0].clientX, e.touches[0].clientY);
-            }
-          }}
-          className="rounded-lg shadow-inner max-w-full h-auto touch-none"
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+          className="rounded-lg shadow-inner max-w-full h-auto touch-none select-none"
         />
 
-        {/* Guía interactiva flotante permanente para que el usuario sepa que puede arrastrar */}
+        {/* Guía interactiva cuando no está arrastrando */}
         {!isDraggingTip && (
           <div className="absolute top-16 pointer-events-none bg-slate-900/90 border border-amber-500/40 text-amber-300 px-3.5 py-1.5 rounded-full text-xs flex items-center space-x-2 shadow-lg backdrop-blur-sm animate-pulse">
             <Hand size={15} className="text-amber-400" />
-            <span>Haz clic o toca la masa amarilla para arrastrarla</span>
+            <span>Haz clic o arrastra la masa amarilla</span>
           </div>
         )}
       </div>

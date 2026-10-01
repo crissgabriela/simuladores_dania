@@ -135,37 +135,32 @@ export const App: React.FC = () => {
   const handleTipDragStart = useCallback(() => {
     isDraggingRef.current = true;
     setIsDraggingTip(true);
+    stateRef.current.u_dot = 0;
+    stateRef.current.u_ddot = 0;
   }, []);
 
-  // Mover masa manualmente mientras se arrastra
+  // Mover masa manualmente mientras se arrastra (actualización síncrona en stateRef)
   const handleTipDragMove = useCallback((targetU: number) => {
     // Limitar la deflexión a un rango físico seguro (+/- 120 mm)
     const clampedU = Math.max(-0.12, Math.min(0.12, targetU));
-    setSimState(prev => {
-      const updated: SimulationState = {
-        ...prev,
-        u: clampedU,
-        u_dot: 0,
-        u_ddot: 0,
-        x_tip: prev.xb + clampedU,
-      };
-      stateRef.current = updated;
-      return updated;
-    });
+
+    // Actualización síncrona inmediata de la referencia física
+    stateRef.current.u = clampedU;
+    stateRef.current.u_dot = 0;
+    stateRef.current.u_ddot = 0;
+    stateRef.current.x_tip = stateRef.current.xb + clampedU;
+
+    // Notificar a React para re-renderizar el canvas y osciloscopio
+    setSimState({ ...stateRef.current });
   }, []);
 
   // Soltar masa (inicia la oscilación libre desde la posición desplazada)
   const handleTipDragEnd = useCallback(() => {
     isDraggingRef.current = false;
     setIsDraggingTip(false);
-    setSimState(prev => {
-      const updated: SimulationState = {
-        ...prev,
-        u_dot: 0, // velocidad inicial cero al soltar
-      };
-      stateRef.current = updated;
-      return updated;
-    });
+    stateRef.current.u_dot = 0;
+    stateRef.current.u_ddot = 0;
+    setSimState({ ...stateRef.current });
   }, []);
 
   // Cargar experimento predefinido
@@ -190,29 +185,27 @@ export const App: React.FC = () => {
         const timeScale = stateRef.current.timeScale;
         const simDtTotal = dtReal * timeScale;
 
-        let currentState = stateRef.current;
-
         if (isDraggingRef.current) {
-          // El usuario está sosteniendo la masa: la cinemática de la base continúa
-          // pero la deflexión relativa u se mantiene fija por la mano del usuario
-          const nextT = currentState.t + simDtTotal;
+          // El usuario está sosteniendo la masa con el ratón:
+          // La cinemática de la base se sigue calculando si está activa,
+          // pero u se mantiene exactamente en el valor sostenido por el puntero
+          const nextT = stateRef.current.t + simDtTotal;
           const baseKin = getBaseKinematics(nextT, excitationRef.current);
-          currentState = {
-            ...currentState,
-            t: nextT,
-            xb: baseKin.xb,
-            xb_dot: baseKin.xb_dot,
-            xb_ddot: baseKin.xb_ddot,
-            u_dot: 0,
-            u_ddot: 0,
-            x_tip: baseKin.xb + currentState.u,
-          };
-          setSimState(currentState);
-          stateRef.current = currentState;
+
+          stateRef.current.t = nextT;
+          stateRef.current.xb = baseKin.xb;
+          stateRef.current.xb_dot = baseKin.xb_dot;
+          stateRef.current.xb_ddot = baseKin.xb_ddot;
+          stateRef.current.u_dot = 0;
+          stateRef.current.u_ddot = 0;
+          stateRef.current.x_tip = baseKin.xb + stateRef.current.u;
+
+          setSimState({ ...stateRef.current });
         } else {
           // Integración numérica ordinaria con Runge-Kutta de 4to Orden (RK4)
           const subStep = 0.002;
           let elapsed = 0;
+          let currentState = stateRef.current;
 
           while (elapsed < simDtTotal) {
             const stepSize = Math.min(subStep, simDtTotal - elapsed);
@@ -220,19 +213,19 @@ export const App: React.FC = () => {
             elapsed += stepSize;
           }
 
-          setSimState(currentState);
           stateRef.current = currentState;
+          setSimState(currentState);
         }
 
         // Muestrear en el buffer a 100 Hz (cada 10 ms simulados)
-        if (currentState.t - lastSampleTimeRef.current >= 0.01) {
-          lastSampleTimeRef.current = currentState.t;
+        if (stateRef.current.t - lastSampleTimeRef.current >= 0.01) {
+          lastSampleTimeRef.current = stateRef.current.t;
           const newPoint: TimePoint = {
-            t: currentState.t,
-            xb: currentState.xb,
-            u: currentState.u,
-            xtip: currentState.x_tip,
-            xb_ddot: currentState.xb_ddot,
+            t: stateRef.current.t,
+            xb: stateRef.current.xb,
+            u: stateRef.current.u,
+            xtip: stateRef.current.x_tip,
+            xb_ddot: stateRef.current.xb_ddot,
           };
 
           const maxBufferSize = 2048; // ~20 segundos a 100 Hz
@@ -373,6 +366,7 @@ export const App: React.FC = () => {
             onReset={handleReset}
             onTimeScaleChange={scale => setSimState(prev => ({ ...prev, timeScale: scale }))}
             onTuneToResonance={handleTuneToResonance}
+            onManualDisplace={handleTipDragMove}
           />
         </div>
       </main>

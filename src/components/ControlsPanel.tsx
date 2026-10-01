@@ -31,6 +31,7 @@ interface ControlsPanelProps {
   onReset: () => void;
   onTimeScaleChange: (scale: number) => void;
   onTuneToResonance: () => void;
+  onManualDisplace?: (uMeters: number) => void;
 }
 
 export const ControlsPanel: React.FC<ControlsPanelProps> = ({
@@ -44,6 +45,7 @@ export const ControlsPanel: React.FC<ControlsPanelProps> = ({
   onReset,
   onTimeScaleChange,
   onTuneToResonance,
+  onManualDisplace,
 }) => {
   // Manejo de cambio de material predefinido
   const handleMaterialSelect = (name: string) => {
@@ -109,6 +111,28 @@ export const ControlsPanel: React.FC<ControlsPanelProps> = ({
             </button>
           ))}
         </div>
+
+        {/* Flexión manual rápida */}
+        {onManualDisplace && (
+          <div className="flex items-center space-x-1 bg-slate-900 border border-slate-800 px-2 py-1 rounded-lg">
+            <span className="text-xs text-slate-400">Flexión inicial:</span>
+            {[-0.03, -0.015, 0, 0.015, 0.03].map(v => (
+              <button
+                key={v}
+                onClick={() => onManualDisplace(v)}
+                className={`px-1.5 py-0.5 rounded text-[11px] font-mono transition ${
+                  Math.abs(state.u - v) < 0.002
+                    ? 'bg-amber-600 text-white font-bold'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                }`}
+                title={`Desplazar masa a ${v * 1000} mm y soltar`}
+              >
+                {v === 0 ? '0' : (v > 0 ? '+' : '') + (v * 1000).toFixed(0)}
+              </button>
+            ))}
+            <span className="text-[10px] text-slate-500">mm</span>
+          </div>
+        )}
       </div>
 
       {/* 2. Tarjetas de Parámetros Derivados del Sistema (Física y Resonancia) */}
