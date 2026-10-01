@@ -52,9 +52,10 @@ try {
     run(`git commit -m "${commitMsg}"`);
     console.log('✅ Commit creado.');
 
-    // 4. Push a GitHub
-    console.log('\n🚀 Paso 4: Enviando cambios a GitHub (crissgabriela/simuladores_dania)...');
-    run('git push -u origin master');
+    // 4. Push a GitHub (detectando la rama actual dinámicamente)
+    const currentBranch = execSync('git branch --show-current', { encoding: 'utf-8' }).trim() || 'main';
+    console.log(`\n🚀 Paso 4: Enviando cambios a GitHub (crissgabriela/simuladores_dania) en la rama '${currentBranch}'...`);
+    run(`git push origin ${currentBranch}`);
     console.log('✅ Cambios subidos exitosamente a GitHub.');
   }
 
