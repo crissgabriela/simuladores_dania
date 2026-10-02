@@ -1,73 +1,129 @@
 #!/usr/bin/env node
 
 /**
- * Agente de Verificación y Sincronización Automática con GitHub & Vercel
+ * AGENTE REVISOR Y DE DESPLIEGUE CONTINUO (GitHub & Vercel)
  * 
- * Funcionalidad:
- * 1. Comprueba el estado del repositorio local (git status)
- * 2. Ejecuta la verificación estricta de compilación TypeScript y empaquetado (npm run build)
- * 3. Añade archivos modificados y genera commit semántico
- * 4. Sube los cambios al repositorio remoto en GitHub
- * 5. Reporta el estado de despliegue en Vercel
+ * Este script actúa como un agente de control de calidad autónomo:
+ * 1. Verifica la integridad del código ejecutando el compilador de TypeScript y Vite.
+ * 2. Comprueba el estado del repositorio Git y detecta archivos modificados/nuevos.
+ * 3. Crea commits con mensajes semánticos estructurados.
+ * 4. Envía los cambios al repositorio remoto en GitHub.
+ * 5. Notifica el estado para el despliegue automático en Vercel.
  */
 
 const { execSync } = require('child_process');
-const path = require('path');
+const readline = require('readline');
 
 function run(command, silent = false) {
   try {
     return execSync(command, { encoding: 'utf-8', stdio: silent ? 'pipe' : 'inherit' });
   } catch (err) {
     if (!silent) {
-      console.error(`❌ Error al ejecutar: ${command}`);
+      console.error(`\n❌ Error ejecutando el comando: ${command}`);
     }
     throw err;
   }
 }
 
-console.log('====================================================');
-console.log('🤖 AGENTE DE SINCRONIZACIÓN Y DESPLIEGUE (GitHub & Vercel)');
-console.log('====================================================\n');
-
-try {
-  // 1. Verificación de compilación local
-  console.log('🔍 Paso 1: Verificando compilación TypeScript y bundling de Vite...');
-  run('npm run build');
-  console.log('✅ Compilación verificada exitosamente. Sin errores de tipos ni sintaxis.\n');
-
-  // 2. Comprobar git status
-  console.log('📦 Paso 2: Verificando estado de Git...');
-  const statusOutput = execSync('git status --porcelain', { encoding: 'utf-8' }).trim();
-
-  if (!statusOutput) {
-    console.log('ℹ️ No hay modificaciones pendientes para sincronizar. El repositorio está al día.');
-  } else {
-    console.log('Archivos modificados detectados:');
-    console.log(statusOutput);
-
-    // 3. Stage & Commit
-    console.log('\n📝 Paso 3: Agregando cambios y creando commit...');
-    run('git add -A');
-    const commitMsg = process.argv[2] || `Actualización del laboratorio de oscilaciones - ${new Date().toISOString().replace('T', ' ').substring(0, 19)}`;
-    run(`git commit -m "${commitMsg}"`);
-    console.log('✅ Commit creado.');
-
-    // 4. Push a GitHub (detectando la rama actual dinámicamente)
-    const currentBranch = execSync('git branch --show-current', { encoding: 'utf-8' }).trim() || 'main';
-    console.log(`\n🚀 Paso 4: Enviando cambios a GitHub (crissgabriela/simuladores_dania) en la rama '${currentBranch}'...`);
-    run(`git push origin ${currentBranch}`);
-    console.log('✅ Cambios subidos exitosamente a GitHub.');
-  }
-
-  // 5. Reporte Vercel
-  console.log('\n🌐 Paso 5: Estado de Vercel');
-  console.log('   Si el repositorio está conectado a Vercel, el despliegue se activa');
-  console.log('   automáticamente tras el push a GitHub.');
-  console.log('   Configuración: framework Vite, build: npm run build, output: dist/\n');
-
-  console.log('🎉 Proceso completado con éxito.');
-} catch (error) {
-  console.error('\n❌ Hubo un error durante la verificación/sincronización:');
-  console.error(error.message);
-  process.exit(1);
+function promptUser(query) {
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  return new Promise(resolve => rl.question(query, ans => {
+    rl.close();
+    resolve(ans.trim());
+  }));
 }
+
+async function main() {
+  console.log('\n================================================================');
+  console.log('🤖 AGENTE REVISOR DE CALIDAD Y DESPLIEGUE (GitHub & Vercel)');
+  console.log('================================================================\n');
+
+  try {
+    // 1. Verificación preliminar de Git
+    console.log('🔍 Paso 1: Verificando configuración de Git...');
+    try {
+      execSync('git config user.name', { stdio: 'pipe' });
+    } catch (_) {
+      console.log('   ⚠️ Configurando autor predeterminado de Git para este proyecto...');
+      run('git config user.name "Profesora - Laboratorio de Oscilaciones"', true);
+      run('git config user.email "profesora@educacion.local"', true);
+    }
+
+    // 2. Comprobar si hay cambios
+    console.log('📦 Paso 2: Analizando archivos modificados o creados...');
+    const statusOutput = execSync('git status --porcelain', { encoding: 'utf-8' }).trim();
+
+    if (!statusOutput) {
+      console.log('   ✅ No hay cambios pendientes. El proyecto está sincronizado y al día.');
+      console.log('\n================================================================');
+      console.log('🎉 Todo el repositorio ya coincide con la última versión.');
+      console.log('================================================================\n');
+      return;
+    }
+
+    console.log('   Archivos con modificaciones detectados:');
+    statusOutput.split('\n').forEach(line => console.log('   -> ' + line));
+
+    // 3. Verificación estricta de compilación TypeScript & Vite
+    console.log('\n🛠️ Paso 3: Verificando compilación TypeScript y empaquetado (npm run build)...');
+    console.log('   (El agente comprueba que no existan errores de código o tipos antes de subir)');
+    
+    run('npm run build');
+    console.log('   ✅ Compilación 100% exitosa. Sin errores de sintaxis ni de tipos.\n');
+
+    // 4. Obtener mensaje del commit
+    let commitMsg = process.argv.slice(2).join(' ').trim();
+    if (!commitMsg) {
+      if (process.stdin.isTTY) {
+        console.log('💡 Escribe un breve resumen de los cambios que hiciste (o presiona ENTER para mensaje automático):');
+        commitMsg = await promptUser('   Mensaje: ');
+      }
+      if (!commitMsg) {
+        commitMsg = `Actualización de simulación - ${new Date().toLocaleString('es-ES')}`;
+      }
+    }
+
+    // 5. Stage y Commit
+    console.log(`\n📝 Paso 4: Creando commit seguro con el mensaje: "${commitMsg}"...`);
+    run('git add -A');
+    run(`git commit -m "${commitMsg.replace(/"/g, '\\"')}"`);
+    console.log('   ✅ Commit registrado localmente.');
+
+    // 6. Push a GitHub
+    const currentBranch = execSync('git branch --show-current', { encoding: 'utf-8' }).trim() || 'main';
+    console.log(`\n🚀 Paso 5: Enviando cambios a GitHub en la rama '${currentBranch}'...`);
+    
+    try {
+      run(`git push origin ${currentBranch}`);
+      console.log('   ✅ Cambios subidos exitosamente a GitHub.');
+    } catch (pushErr) {
+      console.log('   ⚠️ Intentando establecer upstream para la rama...');
+      run(`git push -u origin ${currentBranch}`);
+      console.log('   ✅ Cambios subidos exitosamente a GitHub.');
+    }
+
+    // 7. Notificación de Vercel
+    console.log('\n🌐 Paso 6: Despliegue en la Nube (Vercel)');
+    console.log('   ------------------------------------------------------------');
+    console.log('   ✓ GitHub ha recibido la nueva versión.');
+    console.log('   ✓ Si Vercel está conectado a este repositorio, el despliegue');
+    console.log('     se activó AUTOMÁTICAMENTE en segundo plano.');
+    console.log('   ✓ La versión en línea se actualizará en aproximadamente 1 minuto.');
+    console.log('   ------------------------------------------------------------\n');
+
+    console.log('================================================================');
+    console.log('🎉 ¡PROCESO DE ACTUALIZACIÓN COMPLETADO CON ÉXITO!');
+    console.log('================================================================\n');
+
+  } catch (error) {
+    console.error('\n❌ ERROR DURANTE LA REVISIÓN O SINCRONIZACIÓN:');
+    console.error('   ' + (error.message || error));
+    console.error('\n💡 Sugerencia: Revisa que el código no tenga errores o que tengas conexión a internet.\n');
+    process.exit(1);
+  }
+}
+
+main();

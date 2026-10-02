@@ -44,6 +44,10 @@ Una aplicación web interactiva de simulación física y pedagógica diseñada p
 5. **Agente de Sincronización Automática con GitHub & Vercel**:
    - Herramienta y scripts dedicados para comprobar la integridad del código, verificar compilación TypeScript y desplegar en la nube con un solo comando.
 
+> 👩‍🏫 **¿Eres docente o deseas continuar este proyecto de forma autónoma?**  
+> Consulta la [**Guía Docente Paso a Paso (GUIA_PROFESORA.md)**](./GUIA_PROFESORA.md) con instaladores en 1 clic para Windows/Mac, instrucciones de despliegue en Vercel y el prompt maestro para trabajar con Inteligencia Artificial.
+
+
 ---
 
 ## 🚀 Despliegue en Vercel
